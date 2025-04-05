@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# 设置错误处理
+# 错误处理
 set -e
 trap 'last_command=$current_command; current_command=$BASH_COMMAND' DEBUG
 trap 'echo "\"${last_command}\" command failed with exit code $?."' EXIT
@@ -43,15 +43,6 @@ check_network() {
         echo "错误: 网络连接异常，请检查网络设置"
         exit 1
     fi
-}
-
-# 安装Docker Compose
-install_docker_compose() {
-    echo "安装Docker Compose..."
-    COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d\" -f4)
-    curl -L "https://github.com/docker/compose/releases/download/${COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
-    chmod +x /usr/local/bin/docker-compose
-    echo "Docker Compose 安装完成"
 }
 
 echo "开始安装Docker..."
@@ -163,13 +154,6 @@ systemctl start docker
 # 设置Docker开机自启动
 systemctl enable docker
 
-# 安装Docker Compose
-read -p "是否安装Docker Compose？(y/n) " -n 1 -r
-echo
-if [[ $REPLY =~ ^[Yy]$ ]]; then
-    install_docker_compose
-fi
-
 # 验证安装
 echo "验证Docker安装..."
 if ! docker --version; then
@@ -188,5 +172,4 @@ docker version
 echo "Docker服务状态："
 systemctl status docker
 
-# 清除错误处理
 trap - EXIT 
