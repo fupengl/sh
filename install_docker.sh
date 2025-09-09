@@ -39,10 +39,34 @@ check_system_requirements() {
 # 检查网络连接
 check_network() {
     echo "检查网络连接..."
-    if ! ping -c 1 google.com &> /dev/null && ! ping -c 1 baidu.com &> /dev/null; then
-        echo "错误: 网络连接异常，请检查网络设置"
-        exit 1
+    local sites=("baidu.com" "mirrors.aliyun.com" "download.docker.com" "google.com")
+    local connected=false
+    
+    for site in "${sites[@]}"; do
+        echo "测试连接到 $site..."
+        if ping -c 1 -W 5 $site &> /dev/null; then
+            echo "网络连接正常 ($site)"
+            connected=true
+            break
+        fi
+    done
+    
+    if [ "$connected" = false ]; then
+        echo "警告: 网络连接可能存在问题，但继续尝试安装..."
+        echo "如果安装失败，请检查网络设置或防火墙配置"
     fi
+}
+
+# 清理旧的Docker安装
+cleanup_old_docker() {
+    echo "清理旧的Docker安装..."
+    # 删除旧的GPG密钥和仓库文件
+    rm -f /usr/share/keyrings/docker-archive-keyring.gpg
+    rm -f /etc/apt/sources.list.d/docker.list
+    rm -f /etc/apt/sources.list.d/docker-ce.list
+    
+    # 清理可能存在的旧Docker安装
+    apt-get remove -y docker docker-engine docker.io containerd runc || true
 }
 
 echo "开始安装Docker..."
@@ -64,6 +88,10 @@ case $OS in
     "ubuntu"|"debian")
         # Ubuntu/Debian安装流程
         echo "检测到 ${OS} ${VERSION_ID} 系统"
+        
+        # 清理旧的安装
+        cleanup_old_docker
+        
         # 更新包索引
         apt-get update
 
@@ -75,22 +103,77 @@ case $OS in
             gnupg \
             lsb-release
 
-        # 删除旧的GPG密钥（如果存在）
-        rm -f /usr/share/keyrings/docker-archive-keyring.gpg
+        # 创建密钥目录
+        mkdir -p /usr/share/keyrings/
 
         # 添加Docker的官方GPG密钥
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
-        curl -fsSL https://download.docker.com/linux/ubuntu/gpg | apt-key add -
+        echo "添加Docker GPG密钥..."
+        
+        # 定义多个GPG密钥源
+        gpg_sources=(
+            "https://download.docker.com/linux/ubuntu/gpg"
+            "https://mirrors.aliyun.com/docker-ce/linux/ubuntu/gpg"
+            "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu/gpg"
+            "https://mirrors.ustc.edu.cn/docker-ce/linux/ubuntu/gpg"
+        )
+        
+        gpg_success=false
+        for gpg_url in "${gpg_sources[@]}"; do
+            echo "尝试从 $gpg_url 下载GPG密钥..."
+            if curl -fsSL --connect-timeout 10 --max-time 30 "$gpg_url" | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg; then
+                echo "GPG密钥下载成功"
+                gpg_success=true
+                break
+            else
+                echo "从 $gpg_url 下载失败，尝试下一个源..."
+            fi
+        done
+        
+        if [ "$gpg_success" = false ]; then
+            echo "错误: 无法从任何源下载GPG密钥，请检查网络连接"
+            exit 1
+        fi
 
         # 设置稳定版仓库
-        echo \
-          "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu \
-          $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+        echo "添加Docker仓库..."
+        
+        # 定义多个Docker仓库源
+        repo_sources=(
+            "https://download.docker.com/linux/ubuntu"
+            "https://mirrors.aliyun.com/docker-ce/linux/ubuntu"
+            "https://mirrors.tuna.tsinghua.edu.cn/docker-ce/linux/ubuntu"
+            "https://mirrors.ustc.edu.cn/docker-ce/linux/ubuntu"
+        )
+        
+        repo_success=false
+        for repo_url in "${repo_sources[@]}"; do
+            echo "尝试使用仓库源: $repo_url"
+            echo \
+              "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] $repo_url \
+              $(lsb_release -cs) stable" | tee /etc/apt/sources.list.d/docker.list > /dev/null
+            
+            # 测试仓库连接
+            if timeout 30 apt-get update -o Dir::Etc::sourcelist=/etc/apt/sources.list.d/docker.list -o Dir::Etc::sourceparts=/dev/null; then
+                echo "Docker仓库配置成功"
+                repo_success=true
+                break
+            else
+                echo "仓库源 $repo_url 连接失败，尝试下一个..."
+                rm -f /etc/apt/sources.list.d/docker.list
+            fi
+        done
+        
+        if [ "$repo_success" = false ]; then
+            echo "错误: 无法连接到任何Docker仓库源"
+            exit 1
+        fi
 
         # 更新包索引
+        echo "更新包列表..."
         apt-get update
 
         # 安装Docker Engine
+        echo "安装Docker..."
         apt-get install -y docker-ce docker-ce-cli containerd.io
         ;;
         
@@ -105,7 +188,7 @@ case $OS in
             docker-latest \
             docker-latest-logrotate \
             docker-logrotate \
-            docker-engine
+            docker-engine || true
 
         # 安装必要的依赖
         yum install -y yum-utils
@@ -168,8 +251,8 @@ fi
 
 echo "Docker安装和配置完成！"
 echo "Docker版本信息："
-docker version
+docker --version
 echo "Docker服务状态："
-systemctl status docker
+systemctl status docker --no-pager -l
 
-trap - EXIT 
+trap - EXIT
